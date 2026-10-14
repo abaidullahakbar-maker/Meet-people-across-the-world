@@ -1,0 +1,5164 @@
+--// ============================================================
+--// NUKE HUB • FINAL
+--//
+--// Numpad * = Show / Hide
+--//
+--// • Working spectator detector
+--// • Invisible-first spectator support
+--// • Invisibility gamepass monitoring
+--// • EXACT See Invisible Players
+--// • Uses Character.Invisible attribute
+--// • Mini: Watcher → Target
+--// • Spectator History + Duration
+--// • Self spectating
+--// • Watch alert
+--// • Spectator ESP
+--// • Real RoomTP rooms
+--// • Occupied rooms first
+--// • Favorite rooms
+--// • Room SPEC
+--// • TP to currently spectated player
+--// • OLD Door ESP
+--// • Room history
+--// ============================================================
+
+local P=game:GetService("Players")
+local U=game:GetService("UserInputService")
+local W=game:GetService("Workspace")
+local R=game:GetService("ReplicatedStorage")
+local SG=game:GetService("StarterGui")
+local SS=game:GetService("SoundService")
+local MPS=game:GetService("MarketplaceService")
+
+local L=P.LocalPlayer
+local PG=L:WaitForChild("PlayerGui")
+local Cam=W.CurrentCamera
+
+local KEY=Enum.KeyCode.KeypadMultiply
+
+local INVIS_PASS_ID=954689777
+local SPEC_DELAY=.35
+local INVIS_ESP_DELAY=.08
+
+--==============================================================
+-- CLEAN OLD
+--==============================================================
+
+local ENV=(getgenv and getgenv()) or _G
+
+if ENV.NUKE_FINAL_CLEANUP then
+	pcall(ENV.NUKE_FINAL_CLEANUP)
+end
+
+if ENV.NUKE_CLEANUP then
+	pcall(ENV.NUKE_CLEANUP)
+end
+
+local old=PG:FindFirstChild("NUKEHub")
+
+if old then
+	old:Destroy()
+end
+
+local alive=true
+local CON={}
+
+local function connect(sig,fn)
+	local c=sig:Connect(fn)
+	table.insert(CON,c)
+	return c
+end
+
+--==============================================================
+-- THEME
+--==============================================================
+
+local function C(r,g,b)
+	return Color3.fromRGB(r,g,b)
+end
+
+local T={
+	BG=C(18,19,22),
+
+	PANEL=C(25,27,31),
+	PANEL2=C(31,33,38),
+
+	BUTTON=C(56,60,69),
+	BORDER=C(65,68,75),
+
+	TEXT=C(239,241,245),
+	SUB=C(156,160,169),
+	DIM=C(103,108,118),
+
+	GREEN=C(72,220,125),
+	GREEN2=C(42,125,76),
+
+	RED=C(239,79,91),
+	RED2=C(120,48,55),
+
+	GOLD=C(235,192,78),
+	CYAN=C(50,210,255)
+}
+
+local function round(x,r)
+	local c=Instance.new("UICorner",x)
+	c.CornerRadius=UDim.new(0,r or 6)
+end
+
+local function stroke(x,col,tr)
+	local s=Instance.new("UIStroke",x)
+	s.Color=col or T.BORDER
+	s.Transparency=tr or .3
+end
+
+local function lbl(p,v,size,col,bold)
+
+	local x=Instance.new("TextLabel",p)
+
+	x.BackgroundTransparency=1
+	x.Text=v or ""
+	x.TextColor3=col or T.TEXT
+	x.TextSize=size or 9
+
+	x.Font=
+		bold
+		and Enum.Font.GothamBold
+		or Enum.Font.GothamMedium
+
+	x.TextXAlignment=Enum.TextXAlignment.Left
+	x.TextYAlignment=Enum.TextYAlignment.Center
+
+	return x
+end
+
+local function low(x)
+	return string.lower(tostring(x or ""))
+end
+
+local function clean(x)
+
+	return tostring(x or "")
+		:gsub("<.->","")
+		:gsub("^%s+","")
+		:gsub("%s+$","")
+end
+
+--==============================================================
+-- SETTINGS
+--==============================================================
+
+local showEmpty=true
+local overhead=true
+local doorESP=false
+
+local historyEnabled=false
+local specHistoryEnabled=false
+
+local watchAlert=true
+local autoRefresh=true
+
+-- OFF by default so you manually enable it.
+local seeInvisible=false
+
+-- Adds a free NUKE TP button under the game's Spectate Teleport button.
+local spectateTpEnabled=true
+
+local miniMode=false
+
+ENV.NUKE_FAVORITES=
+	ENV.NUKE_FAVORITES
+	or {}
+
+local favorites=ENV.NUKE_FAVORITES
+
+--==============================================================
+-- STATE
+--==============================================================
+
+local rooms={}
+local groups={}
+
+local history={}
+local lastRoom={}
+
+local rel={}
+local watchingMe={}
+
+local OH={}
+local doorObjects={}
+
+local invisibleESP={}
+
+local specHistory={}
+local specSessions={}
+local specHistoryLabels={}
+
+local rebuildPending=false
+
+local rebuild
+local updateMini
+local updateInvisibleESP
+
+--==============================================================
+-- GAMEPASS CACHE
+--==============================================================
+
+local invisOwners={}
+local checkingPass={}
+
+local function checkInvisPass(p)
+
+	if not p
+	or checkingPass[p]
+	or invisOwners[p]~=nil then
+		return
+	end
+
+	checkingPass[p]=true
+
+	task.spawn(function()
+
+		local ok,owns=
+			pcall(function()
+
+				return MPS:UserOwnsGamePassAsync(
+					p.UserId,
+					INVIS_PASS_ID
+				)
+
+			end)
+
+		if p.Parent then
+			invisOwners[p]=ok and owns==true
+		end
+
+		checkingPass[p]=nil
+	end)
+end
+
+--==============================================================
+-- GUI
+--==============================================================
+
+local G=Instance.new("ScreenGui",PG)
+
+G.Name="NUKEHub"
+G.ResetOnSpawn=false
+G.IgnoreGuiInset=true
+
+--==============================================================
+-- FULL WINDOW
+--==============================================================
+
+local M=Instance.new("Frame",G)
+
+M.Size=UDim2.fromOffset(292,410)
+
+M.Position=
+	UDim2.new(
+		0,
+		20,
+		.5,
+		-205
+	)
+
+M.BackgroundColor3=T.BG
+M.BorderSizePixel=0
+M.Active=true
+
+round(M,9)
+stroke(M,T.BORDER,.2)
+
+--==============================================================
+-- MINI
+--==============================================================
+
+local Mini=Instance.new("Frame",G)
+
+Mini.Size=UDim2.fromOffset(320,54)
+
+Mini.Position=
+	UDim2.new(
+		0,
+		20,
+		.5,
+		-27
+	)
+
+Mini.BackgroundColor3=T.BG
+Mini.BorderSizePixel=0
+
+Mini.Visible=false
+Mini.Active=true
+
+round(Mini,8)
+stroke(Mini,T.BORDER,.15)
+
+local MiniTitle=
+	lbl(
+		Mini,
+		"NUKE",
+		11,
+		T.TEXT,
+		true
+	)
+
+MiniTitle.Size=UDim2.fromOffset(50,27)
+MiniTitle.Position=UDim2.fromOffset(10,1)
+
+local MiniStats=
+	lbl(
+		Mini,
+		"SPEC 0  •  ROOMS 0",
+		8,
+		T.SUB,
+		true
+	)
+
+MiniStats.Size=
+	UDim2.new(
+		1,
+		-70,
+		0,
+		27
+	)
+
+MiniStats.Position=UDim2.fromOffset(60,1)
+MiniStats.TextXAlignment=Enum.TextXAlignment.Right
+
+local MiniNames=
+	lbl(
+		Mini,
+		"No spectators",
+		9,
+		T.DIM,
+		true
+	)
+
+MiniNames.Size=
+	UDim2.new(
+		1,
+		-20,
+		0,
+		20
+	)
+
+MiniNames.Position=UDim2.fromOffset(10,29)
+MiniNames.TextTruncate=Enum.TextTruncate.AtEnd
+
+local MiniClick=Instance.new("TextButton",Mini)
+
+MiniClick.Size=UDim2.fromScale(1,1)
+MiniClick.BackgroundTransparency=1
+MiniClick.Text=""
+MiniClick.ZIndex=10
+
+--==============================================================
+-- HEADER
+--==============================================================
+
+local Header=Instance.new("Frame",M)
+
+Header.Size=
+	UDim2.new(
+		1,
+		0,
+		0,
+		36
+	)
+
+Header.BackgroundTransparency=1
+
+local Title=
+	lbl(
+		Header,
+		"👁  NUKE HUB",
+		13,
+		T.TEXT,
+		true
+	)
+
+Title.Size=
+	UDim2.new(
+		1,
+		-98,
+		1,
+		0
+	)
+
+Title.Position=UDim2.fromOffset(9,0)
+
+local function headerButton(text,x)
+
+	local b=Instance.new("TextButton",Header)
+
+	b.Size=UDim2.fromOffset(23,21)
+
+	b.Position=
+		UDim2.new(
+			1,
+			x,
+			0,
+			7
+		)
+
+	b.BackgroundColor3=T.PANEL2
+	b.BorderSizePixel=0
+
+	b.Text=text
+	b.TextColor3=T.SUB
+
+	b.TextSize=10
+	b.Font=Enum.Font.GothamBold
+
+	round(b,5)
+
+	return b
+end
+
+local Minimize=headerButton("—",-83)
+local Options=headerButton("•••",-56)
+local Close=headerButton("×",-29)
+
+--==============================================================
+-- SEARCH
+--==============================================================
+
+local Box=Instance.new("TextBox",M)
+
+Box.Size=
+	UDim2.new(
+		1,
+		-87,
+		0,
+		28
+	)
+
+Box.Position=UDim2.fromOffset(8,38)
+
+Box.BackgroundColor3=T.PANEL2
+Box.BorderSizePixel=0
+
+Box.Text=""
+Box.PlaceholderText="Player name..."
+Box.PlaceholderColor3=T.DIM
+Box.TextColor3=T.TEXT
+
+Box.TextSize=10
+Box.Font=Enum.Font.Gotham
+Box.TextXAlignment=Enum.TextXAlignment.Left
+Box.ClearTextOnFocus=false
+
+round(Box,6)
+
+local Pad=Instance.new("UIPadding",Box)
+Pad.PaddingLeft=UDim.new(0,8)
+
+local SpecBtn=Instance.new("TextButton",M)
+
+SpecBtn.Size=UDim2.fromOffset(71,28)
+
+SpecBtn.Position=
+	UDim2.new(
+		1,
+		-79,
+		0,
+		38
+	)
+
+SpecBtn.BackgroundColor3=T.BUTTON
+SpecBtn.BorderSizePixel=0
+
+SpecBtn.Text="VIEW"
+SpecBtn.TextColor3=T.TEXT
+
+SpecBtn.TextSize=9
+SpecBtn.Font=Enum.Font.GothamBold
+
+round(SpecBtn,6)
+
+local View=
+	lbl(
+		M,
+		"Viewing: nobody",
+		8,
+		T.SUB
+	)
+
+View.Size=
+	UDim2.new(
+		1,
+		-112,
+		0,
+		18
+	)
+
+View.Position=UDim2.fromOffset(9,69)
+View.TextTruncate=Enum.TextTruncate.AtEnd
+
+local OBtn=Instance.new("TextButton",M)
+
+OBtn.Size=UDim2.fromOffset(52,19)
+
+OBtn.Position=
+	UDim2.new(
+		1,
+		-111,
+		0,
+		69
+	)
+
+OBtn.BackgroundColor3=T.GREEN2
+OBtn.BorderSizePixel=0
+
+OBtn.Text="ESP ON"
+OBtn.TextColor3=Color3.new(1,1,1)
+
+OBtn.TextSize=8
+OBtn.Font=Enum.Font.GothamBold
+
+round(OBtn,5)
+
+local Refresh=Instance.new("TextButton",M)
+
+Refresh.Size=UDim2.fromOffset(44,19)
+
+Refresh.Position=
+	UDim2.new(
+		1,
+		-52,
+		0,
+		69
+	)
+
+Refresh.BackgroundColor3=T.PANEL2
+Refresh.BorderSizePixel=0
+
+Refresh.Text="R"
+Refresh.TextColor3=T.TEXT
+
+Refresh.TextSize=9
+Refresh.Font=Enum.Font.GothamBold
+
+round(Refresh,5)
+
+--==============================================================
+-- TP BUTTON
+--==============================================================
+
+local TeleportBtn=Instance.new("TextButton",M)
+
+TeleportBtn.Size=UDim2.fromOffset(40,19)
+
+TeleportBtn.Position=
+	UDim2.new(
+		1,
+		-155,
+		0,
+		69
+	)
+
+TeleportBtn.BackgroundColor3=T.GREEN2
+TeleportBtn.BorderSizePixel=0
+
+TeleportBtn.Text="TP"
+TeleportBtn.TextColor3=Color3.new(1,1,1)
+
+TeleportBtn.TextSize=8
+TeleportBtn.Font=Enum.Font.GothamBold
+
+TeleportBtn.Visible=false
+
+round(TeleportBtn,5)
+
+--==============================================================
+-- SCROLL
+--==============================================================
+
+local Scroll=Instance.new("ScrollingFrame",M)
+
+Scroll.Size=
+	UDim2.new(
+		1,
+		-12,
+		1,
+		-97
+	)
+
+Scroll.Position=UDim2.fromOffset(6,93)
+
+Scroll.BackgroundTransparency=1
+Scroll.BorderSizePixel=0
+
+Scroll.ScrollBarThickness=2
+Scroll.ScrollBarImageColor3=T.SUB
+
+Scroll.CanvasSize=UDim2.new()
+
+local Layout=Instance.new("UIListLayout",Scroll)
+
+Layout.Padding=UDim.new(0,4)
+
+connect(
+	Layout:GetPropertyChangedSignal(
+		"AbsoluteContentSize"
+	),
+	function()
+
+		Scroll.CanvasSize=
+			UDim2.fromOffset(
+				0,
+				Layout.AbsoluteContentSize.Y+8
+			)
+	end
+)
+
+--==============================================================
+-- OPTIONS
+--==============================================================
+
+local OP=Instance.new("Frame",M)
+
+OP.Size=UDim2.fromOffset(140,296)
+
+OP.Position=
+	UDim2.new(
+		1,
+		-148,
+		0,
+		34
+	)
+
+OP.BackgroundColor3=T.PANEL
+OP.BorderSizePixel=0
+
+OP.Visible=false
+OP.ZIndex=50
+
+round(OP,7)
+stroke(OP,T.BORDER,.2)
+
+local OT=
+	lbl(
+		OP,
+		"OPTIONS",
+		8,
+		T.SUB,
+		true
+	)
+
+OT.Size=
+	UDim2.new(
+		1,
+		-10,
+		0,
+		20
+	)
+
+OT.Position=UDim2.fromOffset(7,2)
+OT.ZIndex=51
+
+local function option(y,value,on)
+
+	local b=Instance.new("TextButton",OP)
+
+	b.Size=
+		UDim2.new(
+			1,
+			-10,
+			0,
+			26
+		)
+
+	b.Position=UDim2.fromOffset(5,y)
+
+	b.BackgroundColor3=T.PANEL2
+	b.BorderSizePixel=0
+
+	b.Text=value
+
+	b.TextColor3=
+		on
+		and T.GREEN
+		or T.RED
+
+	b.TextSize=8
+	b.Font=Enum.Font.GothamBold
+	b.ZIndex=51
+
+	round(b,5)
+
+	return b
+end
+
+local EmptyBtn=
+	option(
+		22,
+		"EMPTY ROOMS: ON",
+		true
+	)
+
+local OHBtn=
+	option(
+		52,
+		"SPECTATOR ESP: ON",
+		true
+	)
+
+local DoorBtn=
+	option(
+		82,
+		"ROOM DOOR ESP: OFF",
+		false
+	)
+
+local HistoryBtn=
+	option(
+		112,
+		"ROOM HISTORY: OFF",
+		false
+	)
+
+local AlertBtn=
+	option(
+		142,
+		"WATCH ALERT: ON",
+		true
+	)
+
+local AutoBtn=
+	option(
+		172,
+		"AUTO REFRESH: ON",
+		true
+	)
+
+local SpecHistoryBtn=
+	option(
+		202,
+		"SPEC HISTORY: OFF",
+		false
+	)
+
+local InvisibleBtn=
+	option(
+		232,
+		"SEE INVISIBLE: OFF",
+		false
+	)
+
+local SpectateTPBtn=
+	option(
+		262,
+		"SPECTATE TP: ON",
+		true
+	)
+
+connect(
+	Options.MouseButton1Click,
+	function()
+
+		OP.Visible=
+			not OP.Visible
+	end
+)
+
+--==============================================================
+-- PLAYER HELPERS
+--==============================================================
+
+local function resolve(v)
+
+	if not v then
+		return
+	end
+
+	if typeof(v)=="Instance" then
+
+		if v:IsA("Player") then
+			return v
+		end
+
+		local x=v
+
+		while x do
+
+			if x:IsA("Model") then
+
+				local p=
+					P:GetPlayerFromCharacter(
+						x
+					)
+
+				if p then
+					return p
+				end
+			end
+
+			x=x.Parent
+		end
+
+		return
+	end
+
+	local s=low(v)
+
+	for _,p in ipairs(P:GetPlayers()) do
+
+		if s==low(p.Name)
+		or s==low(p.DisplayName)
+		or s==tostring(p.UserId) then
+
+			return p
+		end
+	end
+end
+
+local function findPlayer(x)
+
+	x=low(clean(x))
+
+	if x=="" then
+		return
+	end
+
+	for _,p in ipairs(P:GetPlayers()) do
+
+		if p~=L
+		and
+		(
+			low(p.Name)==x
+			or
+			low(p.DisplayName)==x
+		) then
+
+			return p
+		end
+	end
+
+	for _,p in ipairs(P:GetPlayers()) do
+
+		if p~=L
+		and
+		(
+			low(p.Name):sub(1,#x)==x
+			or
+			low(p.DisplayName):sub(1,#x)==x
+		) then
+
+			return p
+		end
+	end
+end
+
+local function display(user)
+
+	local p=
+		P:FindFirstChild(
+			tostring(user)
+		)
+
+	return
+		p
+		and p.DisplayName
+		or tostring(user)
+end
+
+--==============================================================
+-- MANUAL SPECTATE
+--==============================================================
+
+local spectating=false
+local target=nil
+
+local function stopSpec()
+
+	spectating=false
+	target=nil
+
+	SpecBtn.Text="VIEW"
+	SpecBtn.BackgroundColor3=T.BUTTON
+
+	View.Text="Viewing: nobody"
+	View.TextColor3=T.SUB
+
+	View.Size=
+		UDim2.new(
+			1,
+			-112,
+			0,
+			18
+		)
+
+	TeleportBtn.Visible=false
+
+	Cam=W.CurrentCamera
+
+	local h=
+		L.Character
+		and
+		L.Character:FindFirstChildOfClass(
+			"Humanoid"
+		)
+
+	if h then
+
+		Cam.CameraType=
+			Enum.CameraType.Custom
+
+		Cam.CameraSubject=h
+	end
+end
+
+local function startSpec(p)
+
+	local h=
+		p
+		and p.Character
+		and
+		p.Character:FindFirstChildOfClass(
+			"Humanoid"
+		)
+
+	if not h
+	or p==L then
+		return false
+	end
+
+	target=p
+	spectating=true
+
+	Cam=W.CurrentCamera
+
+	Cam.CameraType=
+		Enum.CameraType.Custom
+
+	Cam.CameraSubject=h
+
+	SpecBtn.Text="STOP"
+	SpecBtn.BackgroundColor3=T.GREEN2
+
+	View.Text=
+		"Viewing: "..
+		p.DisplayName
+
+	View.TextColor3=T.GREEN
+
+	View.Size=
+		UDim2.new(
+			1,
+			-164,
+			0,
+			18
+		)
+
+	TeleportBtn.Visible=true
+
+	return true
+end
+
+connect(
+	SpecBtn.MouseButton1Click,
+	function()
+
+		if spectating then
+
+			stopSpec()
+			return
+		end
+
+		local p=
+			findPlayer(
+				Box.Text
+			)
+
+		if not p then
+
+			SpecBtn.Text="NO PLAYER"
+
+			task.delay(
+				1,
+				function()
+
+					if alive
+					and not spectating then
+
+						SpecBtn.Text="VIEW"
+					end
+				end
+			)
+
+			return
+		end
+
+		startSpec(p)
+	end
+)
+
+--==============================================================
+-- TELEPORT TO CURRENTLY SPECTATED PLAYER
+--==============================================================
+
+connect(
+	TeleportBtn.MouseButton1Click,
+	function()
+
+		if not spectating
+		or not target
+		or not target.Parent then
+
+			TeleportBtn.Visible=false
+			return
+		end
+
+		local myChar=L.Character
+		local theirChar=target.Character
+
+		if not myChar
+		or not theirChar then
+			return
+		end
+
+		local myRoot=
+			myChar:FindFirstChild(
+				"HumanoidRootPart"
+			)
+
+		local theirRoot=
+			theirChar:FindFirstChild(
+				"HumanoidRootPart"
+			)
+
+		if not myRoot
+		or not theirRoot then
+			return
+		end
+
+		pcall(function()
+
+			myChar:PivotTo(
+				theirRoot.CFrame
+				*
+				CFrame.new(
+					0,
+					0,
+					2.5
+				)
+			)
+		end)
+	end
+)
+
+
+--==============================================================
+-- GAME SPECTATE MENU • FREE NUKE TP BUTTON (LOW-LAG)
+--==============================================================
+
+local gameSpectateTP=nil
+local gameSpectateSource=nil
+local gameSpectateRoot=nil
+local spectateSearchQueued=false
+local lastSpectateSearch=0
+
+local function textOf(x)
+	local ok,value=pcall(function()
+		return x.Text
+	end)
+
+	return ok and clean(value) or ""
+end
+
+local function isTextObject(x)
+	return x:IsA("TextLabel")
+		or x:IsA("TextButton")
+		or x:IsA("TextBox")
+end
+
+-- Only walks a candidate branch when we already found something relevant.
+local function branchHasText(root,needle)
+	if not root or not root.Parent then
+		return false
+	end
+
+	needle=low(needle)
+
+	if isTextObject(root)
+	and low(textOf(root)):find(needle,1,true) then
+		return true
+	end
+
+	for _,x in ipairs(root:GetDescendants()) do
+		if isTextObject(x)
+		and low(textOf(x)):find(needle,1,true) then
+			return true
+		end
+	end
+
+	return false
+end
+
+local function findSpectateRootFrom(source)
+	local x=source and source.Parent
+	local depth=0
+
+	-- Spectate panel is normally only a few ancestors above the button.
+	while x and x~=PG and depth<8 do
+		if branchHasText(x,"stop spectating") then
+			return x
+		end
+
+		x=x.Parent
+		depth+=1
+	end
+
+	return source and source.Parent or nil
+end
+
+local function candidateTeleportButton(x)
+	if not x
+	or not x.Parent
+	or not x:IsA("TextButton")
+	or x.Name=="NUKE_SpectateTP"
+	or x:IsDescendantOf(G) then
+		return false
+	end
+
+	return low(textOf(x)):find("teleport",1,true)~=nil
+end
+
+local function setSpectateSource(source)
+	if not candidateTeleportButton(source) then
+		return false
+	end
+
+	local root=findSpectateRootFrom(source)
+
+	if not root
+	or not branchHasText(root,"stop spectating") then
+		return false
+	end
+
+	gameSpectateSource=source
+	gameSpectateRoot=root
+	return true
+end
+
+local function findGameSpectateTeleport()
+	-- Reuse cached objects first: zero full PlayerGui scan in normal use.
+	if gameSpectateSource
+	and gameSpectateSource.Parent
+	and gameSpectateRoot
+	and gameSpectateRoot.Parent then
+		return gameSpectateSource,gameSpectateRoot
+	end
+
+	-- Search TextButtons only when cache is missing.
+	for _,x in ipairs(PG:GetDescendants()) do
+		if candidateTeleportButton(x)
+		and setSpectateSource(x) then
+			return gameSpectateSource,gameSpectateRoot
+		end
+	end
+end
+
+local function selectedSpectatePlayer(root)
+	if not root or not root.Parent then
+		return nil
+	end
+
+	-- Usually the title contains @Username. This avoids looping every player
+	-- for every UI label unless the username form is unavailable.
+	local textObjects={}
+
+	for _,x in ipairs(root:GetDescendants()) do
+		if x:IsA("TextLabel")
+		or x:IsA("TextButton") then
+			textObjects[#textObjects+1]=x
+
+			local username=textOf(x):match("@([%w_]+)")
+			if username then
+				local p=P:FindFirstChild(username)
+				if p and p~=L then
+					return p
+				end
+			end
+		end
+	end
+
+	-- Rare fallback for interfaces that only display Name / DisplayName.
+	for _,x in ipairs(textObjects) do
+		local value=low(textOf(x))
+
+		for _,p in ipairs(P:GetPlayers()) do
+			if p~=L
+			and
+			(
+				value==low(p.Name)
+				or value==low(p.DisplayName)
+			) then
+				return p
+			end
+		end
+	end
+end
+
+local function teleportToPlayer(p)
+	if not p or p==L or not p.Parent then
+		return false
+	end
+
+	local myChar=L.Character
+	local theirChar=p.Character
+
+	if not myChar or not theirChar then
+		return false
+	end
+
+	local myRoot=myChar:FindFirstChild("HumanoidRootPart")
+	local theirRoot=theirChar:FindFirstChild("HumanoidRootPart")
+
+	if not myRoot or not theirRoot then
+		return false
+	end
+
+	return pcall(function()
+		myChar:PivotTo(
+			theirRoot.CFrame*CFrame.new(0,0,2.5)
+		)
+	end)
+end
+
+local function removeGameSpectateTP()
+	if gameSpectateTP then
+		pcall(function()
+			gameSpectateTP:Destroy()
+		end)
+	end
+
+	gameSpectateTP=nil
+end
+
+local function clearGameSpectateCache()
+	removeGameSpectateTP()
+	gameSpectateSource=nil
+	gameSpectateRoot=nil
+end
+
+local function copyButtonLook(source,b)
+	b.Size=source.Size
+	b.AnchorPoint=source.AnchorPoint
+	b.Rotation=source.Rotation
+	b.BackgroundColor3=source.BackgroundColor3
+	b.BackgroundTransparency=source.BackgroundTransparency
+	b.BorderColor3=source.BorderColor3
+	b.BorderSizePixel=source.BorderSizePixel
+	b.AutoButtonColor=source.AutoButtonColor
+	b.TextColor3=source.TextColor3
+	b.TextTransparency=source.TextTransparency
+	b.TextStrokeColor3=source.TextStrokeColor3
+	b.TextStrokeTransparency=source.TextStrokeTransparency
+	b.TextScaled=source.TextScaled
+	b.TextWrapped=source.TextWrapped
+	b.TextSize=source.TextSize
+	b.Font=source.Font
+	b.ZIndex=source.ZIndex+1
+	b.Visible=source.Visible
+
+	pcall(function()
+		b.FontFace=source.FontFace
+	end)
+
+	for _,child in ipairs(source:GetChildren()) do
+		if child:IsA("UICorner")
+		or child:IsA("UIStroke")
+		or child:IsA("UIGradient")
+		or child:IsA("UIPadding") then
+			child:Clone().Parent=b
+		end
+	end
+end
+
+local function refreshGameSpectateTP(forceSearch)
+	if not spectateTpEnabled then
+		clearGameSpectateCache()
+		return
+	end
+
+	-- Avoid expensive fallback searches more than twice per second.
+	if forceSearch and os.clock()-lastSpectateSearch<.5 then
+		return
+	end
+
+	if forceSearch then
+		lastSpectateSearch=os.clock()
+	end
+
+	local source,root=findGameSpectateTeleport()
+
+	if not source or not root then
+		removeGameSpectateTP()
+		return
+	end
+
+	if gameSpectateTP
+	and gameSpectateTP.Parent then
+		gameSpectateTP.Visible=source.Visible
+		return
+	end
+
+	local b=Instance.new("TextButton")
+	b.Name="NUKE_SpectateTP"
+	b.Text="NUKE TP\nFREE"
+	b.Parent=source.Parent
+
+	copyButtonLook(source,b)
+
+	b.Position=
+		source.Position+
+		UDim2.fromOffset(
+			0,
+			math.max(source.AbsoluteSize.Y,24)+6
+		)
+
+	gameSpectateTP=b
+
+	connect(
+		b.MouseButton1Click,
+		function()
+			local p=selectedSpectatePlayer(gameSpectateRoot)
+
+			if not p then
+				b.Text="NO TARGET"
+			else
+				b.Text=teleportToPlayer(p) and "TELEPORTED" or "TP FAILED"
+			end
+
+			task.delay(.65,function()
+				if alive and b.Parent then
+					b.Text="NUKE TP\nFREE"
+				end
+			end)
+		end
+	)
+end
+
+local function queueSpectateSearch()
+	if spectateSearchQueued
+	or not spectateTpEnabled then
+		return
+	end
+
+	spectateSearchQueued=true
+
+	task.delay(.18,function()
+		spectateSearchQueued=false
+
+		if alive and spectateTpEnabled then
+			pcall(refreshGameSpectateTP,true)
+		end
+	end)
+end
+
+-- Important performance change:
+-- Do NOT rescan PlayerGui for every TextLabel/TextButton created.
+-- We only react when a likely Teleport/Spectate control appears.
+connect(
+	PG.DescendantAdded,
+	function(x)
+		if not spectateTpEnabled then
+			return
+		end
+
+		if x:IsA("TextButton") then
+			-- Text can be assigned just after creation, so check now and once deferred.
+			if candidateTeleportButton(x) then
+				if setSpectateSource(x) then
+					pcall(refreshGameSpectateTP,false)
+				end
+			else
+				task.defer(function()
+					if alive
+					and spectateTpEnabled
+					and candidateTeleportButton(x) then
+						if setSpectateSource(x) then
+							pcall(refreshGameSpectateTP,false)
+						end
+					end
+				end)
+			end
+		end
+	end
+)
+
+connect(
+	PG.DescendantRemoving,
+	function(x)
+		if x==gameSpectateSource
+		or x==gameSpectateRoot then
+			gameSpectateSource=nil
+			gameSpectateRoot=nil
+			removeGameSpectateTP()
+			queueSpectateSearch()
+		end
+	end
+)
+
+-- Very light fallback: only search if the cached source no longer exists.
+task.spawn(function()
+	while alive and G.Parent do
+		task.wait(3)
+
+		if spectateTpEnabled
+		and
+		(
+			not gameSpectateSource
+			or not gameSpectateSource.Parent
+		) then
+			queueSpectateSearch()
+		elseif gameSpectateTP
+		and gameSpectateTP.Parent
+		and gameSpectateSource then
+			gameSpectateTP.Visible=gameSpectateSource.Visible
+		end
+	end
+end)
+
+--==============================================================
+-- TEXT CACHE
+--==============================================================
+
+local cache={}
+local cacheCons={}
+
+local function isText(x)
+
+	return
+		x:IsA("TextLabel")
+		or
+		x:IsA("TextButton")
+		or
+		x:IsA("TextBox")
+end
+
+local function clearCache(p)
+
+	cache[p]=nil
+
+	if cacheCons[p] then
+
+		for _,c in ipairs(
+			cacheCons[p]
+		) do
+
+			pcall(function()
+				c:Disconnect()
+			end)
+		end
+	end
+
+	cacheCons[p]=nil
+end
+
+local function cacheChar(p,c)
+
+	clearCache(p)
+
+	cache[p]={}
+	cacheCons[p]={}
+
+	for _,x in ipairs(
+		c:GetDescendants()
+	) do
+
+		if isText(x) then
+			cache[p][x]=true
+		end
+	end
+
+	table.insert(
+		cacheCons[p],
+		c.DescendantAdded:Connect(
+			function(x)
+
+				if isText(x) then
+					cache[p][x]=true
+				end
+			end
+		)
+	)
+
+	table.insert(
+		cacheCons[p],
+		c.DescendantRemoving:Connect(
+			function(x)
+
+				if cache[p] then
+					cache[p][x]=nil
+				end
+			end
+		)
+	)
+end
+
+local function visible(x)
+
+	if not x
+	or not x.Parent then
+		return false
+	end
+
+	local ok,v=
+		pcall(function()
+			return x.Visible
+		end)
+
+	if ok
+	and not v then
+		return false
+	end
+
+	local ok2,t=
+		pcall(function()
+			return x.TextTransparency
+		end)
+
+	if ok2
+	and t>=.95 then
+		return false
+	end
+
+	local q=x.Parent
+	local billboard=false
+
+	while q do
+
+		if q:IsA("GuiObject") then
+
+			local a,b=
+				pcall(function()
+					return q.Visible
+				end)
+
+			if a
+			and not b then
+				return false
+			end
+		end
+
+		if q:IsA("BillboardGui") then
+
+			billboard=true
+
+			local a,b=
+				pcall(function()
+					return q.Enabled
+				end)
+
+			if a
+			and not b then
+				return false
+			end
+		end
+
+		q=q.Parent
+	end
+
+	return billboard
+end
+
+local function hasSpec(p)
+
+	local c=cache[p]
+
+	if not c then
+		return false
+	end
+
+	for x in pairs(c) do
+
+		if x.Parent
+		and visible(x)
+		and
+		string.upper(
+			clean(x.Text)
+		)=="SPECTATING" then
+
+			return true
+		end
+	end
+
+	return false
+end
+
+--==============================================================
+-- EXACT INVISIBILITY DETECTION
+--==============================================================
+
+local function isActuallyInvisible(p)
+
+	if not p
+	or p==L then
+		return false
+	end
+
+	local c=p.Character
+
+	if not c
+	or not c.Parent then
+		return false
+	end
+
+	-- EXACT GAME ATTRIBUTE FOUND FROM LOG
+	return c:GetAttribute("Invisible")==true
+end
+
+-- spectator system calls this function
+local function invisible(p)
+	return isActuallyInvisible(p)
+end
+
+--==============================================================
+-- EXACT INVISIBLE PLAYER ESP
+--==============================================================
+
+local BODY_NAMES={
+	Head=true,
+	UpperTorso=true,
+	LowerTorso=true,
+
+	LeftUpperArm=true,
+	LeftLowerArm=true,
+	LeftHand=true,
+
+	RightUpperArm=true,
+	RightLowerArm=true,
+	RightHand=true,
+
+	LeftUpperLeg=true,
+	LeftLowerLeg=true,
+	LeftFoot=true,
+
+	RightUpperLeg=true,
+	RightLowerLeg=true,
+	RightFoot=true,
+
+	Torso=true,
+	["Left Arm"]=true,
+	["Right Arm"]=true,
+	["Left Leg"]=true,
+	["Right Leg"]=true
+}
+
+local function removeInvisibleESP(p)
+
+	local data=invisibleESP[p]
+
+	if not data then
+		return
+	end
+
+	if data.folder then
+
+		pcall(function()
+			data.folder:Destroy()
+		end)
+	end
+
+	invisibleESP[p]=nil
+end
+
+local function clearInvisibleESP()
+
+	local list={}
+
+	for p in pairs(invisibleESP) do
+		table.insert(list,p)
+	end
+
+	for _,p in ipairs(list) do
+		removeInvisibleESP(p)
+	end
+end
+
+local function addBodyAdornment(
+	part,
+	folder
+)
+
+	if not part
+	or not part:IsA("BasePart") then
+		return
+	end
+
+	if not BODY_NAMES[part.Name] then
+		return
+	end
+
+	local box=
+		Instance.new(
+			"BoxHandleAdornment"
+		)
+
+	box.Name="NUKE_InvisBox"
+
+	box.Adornee=part
+
+	box.Size=
+		part.Size+
+		Vector3.new(
+			.08,
+			.08,
+			.08
+		)
+
+	box.Color3=T.CYAN
+	box.Transparency=.25
+
+	box.AlwaysOnTop=true
+	box.ZIndex=10
+
+	box.Parent=folder
+
+	return box
+end
+
+local function addInvisibleName(
+	p,
+	c,
+	folder
+)
+
+	local root=
+		c:FindFirstChild(
+			"HumanoidRootPart"
+		)
+		or
+		c:FindFirstChild(
+			"Head"
+		)
+
+	if not root then
+		return
+	end
+
+	local g=
+		Instance.new(
+			"BillboardGui"
+		)
+
+	g.Name="NUKE_InvisibleName"
+
+	g.Adornee=root
+
+	g.Size=
+		UDim2.fromOffset(
+			230,
+			34
+		)
+
+	g.StudsOffset=
+		Vector3.new(
+			0,
+			3.5,
+			0
+		)
+
+	g.AlwaysOnTop=true
+	g.MaxDistance=0
+
+	g.Parent=folder
+
+	local t=
+		Instance.new(
+			"TextLabel",
+			g
+		)
+
+	t.Size=
+		UDim2.fromScale(
+			1,
+			1
+		)
+
+	t.BackgroundTransparency=1
+
+	t.Text=
+		"👻  "..
+		p.DisplayName..
+		"  [INVISIBLE]"
+
+	t.TextColor3=T.CYAN
+
+	t.TextStrokeColor3=
+		Color3.new(
+			0,
+			0,
+			0
+		)
+
+	t.TextStrokeTransparency=.1
+
+	t.TextSize=13
+	t.Font=Enum.Font.GothamBold
+end
+
+local function createInvisibleESP(p)
+
+	if not seeInvisible
+	or not p
+	or p==L then
+		return
+	end
+
+	if not isActuallyInvisible(p) then
+
+		removeInvisibleESP(p)
+		return
+	end
+
+	local c=p.Character
+
+	if not c
+	or not c.Parent then
+
+		removeInvisibleESP(p)
+		return
+	end
+
+	local current=invisibleESP[p]
+
+	if current
+	and current.character~=c then
+
+		removeInvisibleESP(p)
+		current=nil
+	end
+
+	if not current then
+
+		local folder=
+			Instance.new(
+				"Folder"
+			)
+
+		folder.Name=
+			"NUKE_INVISIBLE_"..
+			p.Name
+
+		folder.Parent=G
+
+		current={
+			character=c,
+			folder=folder,
+			parts={}
+		}
+
+		invisibleESP[p]=current
+
+		addInvisibleName(
+			p,
+			c,
+			folder
+		)
+	end
+
+	for _,part in ipairs(
+		c:GetDescendants()
+	) do
+
+		if part:IsA("BasePart")
+		and BODY_NAMES[part.Name] then
+
+			if not current.parts[part]
+			or
+			not current.parts[part].Parent then
+
+				local box=
+					addBodyAdornment(
+						part,
+						current.folder
+					)
+
+				if box then
+
+					current.parts[part]=box
+				end
+			else
+
+				-- Keep box matching avatar scale.
+				current.parts[part].Size=
+					part.Size+
+					Vector3.new(
+						.08,
+						.08,
+						.08
+					)
+			end
+		end
+	end
+
+	local dead={}
+
+	for part,box in pairs(
+		current.parts
+	) do
+
+		if not part.Parent
+		or
+		not part:IsDescendantOf(c) then
+
+			table.insert(
+				dead,
+				part
+			)
+
+			if box then
+
+				pcall(function()
+					box:Destroy()
+				end)
+			end
+		end
+	end
+
+	for _,part in ipairs(dead) do
+		current.parts[part]=nil
+	end
+end
+
+updateInvisibleESP=function()
+
+	if not seeInvisible then
+
+		clearInvisibleESP()
+		return
+	end
+
+	local active={}
+
+	for _,p in ipairs(
+		P:GetPlayers()
+	) do
+
+		if p~=L
+		and isActuallyInvisible(p) then
+
+			active[p]=true
+
+			createInvisibleESP(p)
+		end
+	end
+
+	local remove={}
+
+	for p in pairs(
+		invisibleESP
+	) do
+
+		if not active[p]
+		or
+		not p.Parent
+		or
+		not p.Character then
+
+			table.insert(
+				remove,
+				p
+			)
+		end
+	end
+
+	for _,p in ipairs(remove) do
+		removeInvisibleESP(p)
+	end
+end
+
+--==============================================================
+-- STRONG SPECTATE TARGET
+--==============================================================
+
+local function validField(n)
+
+	n=low(n)
+
+	for _,bad in ipairs({
+		"troll",
+		"grab",
+		"favorite",
+		"friend",
+		"booth",
+		"copy",
+		"owner",
+		"room",
+		"call",
+		"borrow",
+		"camerafov"
+	}) do
+
+		if n:find(
+			bad,
+			1,
+			true
+		) then
+
+			return false
+		end
+	end
+
+	return
+		n:find(
+			"spectat",
+			1,
+			true
+		)
+		or
+		n:find(
+			"watching",
+			1,
+			true
+		)
+		or
+		n:find(
+			"watchtarget",
+			1,
+			true
+		)
+		or
+		n:find(
+			"observ",
+			1,
+			true
+		)
+end
+
+local RV={}
+local RR={}
+local HR={}
+
+local latch={}
+local lastSeen={}
+local tc={}
+
+local function addCandidate(
+	c,
+	w,
+	t,
+	score
+)
+
+	if not t
+	or t==w then
+		return
+	end
+
+	if not c[t]
+	or score>c[t] then
+
+		c[t]=score
+	end
+end
+
+local function registerValue(x)
+
+	if not x:IsA(
+		"ValueBase"
+	) then
+		return
+	end
+
+	local n=x.Name
+
+	pcall(function()
+		n=x:GetFullName()
+	end)
+
+	if validField(n) then
+		RV[x]=true
+	end
+end
+
+for _,x in ipairs(
+	R:GetDescendants()
+) do
+	registerValue(x)
+end
+
+connect(
+	R.DescendantAdded,
+	registerValue
+)
+
+connect(
+	R.DescendantRemoving,
+	function(x)
+		RV[x]=nil
+	end
+)
+
+local function inspect(
+	root,
+	w,
+	c
+)
+
+	if not root then
+		return
+	end
+
+	local function attrs(x)
+
+		local ok,a=
+			pcall(function()
+				return x:GetAttributes()
+			end)
+
+		if not ok then
+			return
+		end
+
+		for n,v in pairs(a) do
+
+			if validField(n) then
+
+				addCandidate(
+					c,
+					w,
+					resolve(v),
+					400
+				)
+			end
+		end
+	end
+
+	attrs(root)
+
+	for _,x in ipairs(
+		root:GetDescendants()
+	) do
+
+		if validField(x.Name) then
+			attrs(x)
+		end
+
+		if x:IsA(
+			"ValueBase"
+		) then
+
+			local n=x.Name
+
+			pcall(function()
+				n=x:GetFullName()
+			end)
+
+			if validField(n) then
+
+				local ok,v=
+					pcall(function()
+						return x.Value
+					end)
+
+				if ok then
+
+					addCandidate(
+						c,
+						w,
+						resolve(v),
+						420
+					)
+				end
+			end
+		end
+	end
+end
+
+local function findTarget(w)
+
+	local c={}
+
+	inspect(w,w,c)
+
+	if w.Character then
+		inspect(w.Character,w,c)
+	end
+
+	for x in pairs(RV) do
+
+		if x.Parent then
+
+			local path=
+				low(
+					x:GetFullName()
+				)
+
+			if path:find(
+				low(w.Name),
+				1,
+				true
+			)
+			or
+			path:find(
+				tostring(
+					w.UserId
+				),
+				1,
+				true
+			) then
+
+				local ok,v=
+					pcall(function()
+						return x.Value
+					end)
+
+				if ok then
+
+					addCandidate(
+						c,
+						w,
+						resolve(v),
+						450
+					)
+				end
+			end
+		end
+	end
+
+	local rr=RR[w]
+
+	if rr
+	and os.clock()-rr.time<5 then
+
+		addCandidate(
+			c,
+			w,
+			rr.target,
+			600
+		)
+	end
+
+	local best=nil
+	local score=0
+
+	for p,s in pairs(c) do
+
+		if s>score then
+
+			best=p
+			score=s
+		end
+	end
+
+	return
+		score>=400
+		and best
+		or nil
+end
+
+--==============================================================
+-- SPECTATE REMOTES
+--==============================================================
+
+local function collect(
+	v,
+	out,
+	d
+)
+
+	d=d or 0
+
+	if d>2 then
+		return
+	end
+
+	local p=resolve(v)
+
+	if p then
+
+		out[p]=true
+		return
+	end
+
+	if type(v)=="table" then
+
+		local n=0
+
+		for _,z in pairs(v) do
+
+			n+=1
+
+			if n>20 then
+				break
+			end
+
+			collect(
+				z,
+				out,
+				d+1
+			)
+		end
+	end
+end
+
+local function hookRemote(r)
+
+	if HR[r]
+	or
+	not r:IsA(
+		"RemoteEvent"
+	) then
+
+		return
+	end
+
+	local name=low(r.Name)
+
+	if not name:find(
+		"spectat",
+		1,
+		true
+	) then
+		return
+	end
+
+	HR[r]=true
+
+	connect(
+		r.OnClientEvent,
+		function(...)
+
+			local found={}
+
+			for _,v in ipairs({...}) do
+
+				collect(
+					v,
+					found,
+					0
+				)
+			end
+
+			local list={}
+
+			for p in pairs(found) do
+				table.insert(list,p)
+			end
+
+			local stop=
+				name:find(
+					"stop",
+					1,
+					true
+				)
+				or
+				name:find(
+					"cancel",
+					1,
+					true
+				)
+				or
+				name:find(
+					"reset",
+					1,
+					true
+				)
+
+			if stop then
+
+				for _,p in ipairs(list) do
+
+					latch[p]=nil
+					tc[p]=nil
+					RR[p]=nil
+				end
+
+				return
+			end
+
+			if #list<2 then
+				return
+			end
+
+			local watcher=nil
+
+			for _,p in ipairs(list) do
+
+				if hasSpec(p) then
+
+					watcher=p
+					break
+				end
+			end
+
+			if not watcher then
+
+				local inv={}
+
+				for _,p in ipairs(list) do
+
+					if invisible(p) then
+						table.insert(inv,p)
+					end
+				end
+
+				if #inv==1 then
+					watcher=inv[1]
+				end
+			end
+
+			if watcher then
+
+				for _,t in ipairs(list) do
+
+					if t~=watcher then
+
+						RR[watcher]={
+							target=t,
+							time=os.clock()
+						}
+
+						latch[watcher]=true
+						lastSeen[watcher]=os.clock()
+
+						break
+					end
+				end
+			end
+		end
+	)
+end
+
+for _,x in ipairs(
+	R:GetDescendants()
+) do
+	hookRemote(x)
+end
+
+connect(
+	R.DescendantAdded,
+	hookRemote
+)
+
+--==============================================================
+-- ROOM SYSTEM
+--==============================================================
+
+local function addHistory(v)
+
+	table.insert(
+		history,
+		1,
+		os.date("%H:%M:%S")..
+		"  "..
+		v
+	)
+
+	while #history>15 do
+		table.remove(history)
+	end
+end
+
+local function markDirty()
+
+	if rebuildPending then
+		return
+	end
+
+	rebuildPending=true
+
+	task.delay(
+		.05,
+		function()
+
+			rebuildPending=false
+
+			if alive
+			and rebuild then
+
+				pcall(rebuild)
+			end
+
+			if updateMini then
+				updateMini()
+			end
+		end
+	)
+end
+
+local function scanRooms()
+
+	table.clear(rooms)
+
+	local RS=
+		W:FindFirstChild(
+			"RoomSpawner"
+		)
+
+	if not RS then
+
+		markDirty()
+		return
+	end
+
+	for _,node in ipairs(
+		RS:GetChildren()
+	) do
+
+		local sign=nil
+
+		for _,x in ipairs(
+			node:GetDescendants()
+		) do
+
+			if x:IsA(
+				"TextLabel"
+			) then
+
+				local value=low(x.Text)
+
+				if value:find(
+					"'s room",
+					1,
+					true
+				)
+				or
+				value:find(
+					"’s room",
+					1,
+					true
+				) then
+
+					sign=x
+					break
+				end
+			end
+		end
+
+		if sign then
+
+			table.insert(
+				rooms,
+				{
+					user=node.Name,
+					name=display(node.Name),
+					node=node,
+					sign=sign
+				}
+			)
+		end
+	end
+
+	markDirty()
+end
+
+local function rebuildGroups()
+
+	table.clear(groups)
+
+	for _,p in ipairs(
+		P:GetPlayers()
+	) do
+
+		local room=
+			p:GetAttribute(
+				"RoomTP"
+			)
+
+		if room
+		and tostring(room)~="" then
+
+			room=tostring(room)
+
+			groups[room]=
+				groups[room]
+				or {}
+
+			table.insert(
+				groups[room],
+				p
+			)
+		end
+	end
+
+	for _,list in pairs(groups) do
+
+		table.sort(
+			list,
+			function(a,b)
+
+				return
+					low(a.DisplayName)
+					<
+					low(b.DisplayName)
+			end
+		)
+	end
+end
+
+local function roomChanged(p)
+
+	local new=
+		p:GetAttribute(
+			"RoomTP"
+		)
+
+	new=
+		new
+		and tostring(new)
+		or nil
+
+	local old=lastRoom[p]
+
+	if old~=new then
+
+		if old then
+
+			addHistory(
+				p.DisplayName..
+					" left "..
+					display(old)
+			)
+		end
+
+		if new then
+
+			addHistory(
+				p.DisplayName..
+					" joined "..
+					display(new)
+			)
+		end
+
+		lastRoom[p]=new
+	end
+
+	rebuildGroups()
+	markDirty()
+end
+
+--==============================================================
+-- WATCH ALERT
+--==============================================================
+
+local AlertSound=
+	Instance.new(
+		"Sound",
+		SS
+	)
+
+AlertSound.Name="NUKEWatchAlert"
+AlertSound.SoundId="rbxassetid://6026984224"
+AlertSound.Volume=.7
+
+local function notifyWatcher(p)
+
+	if not watchAlert then
+		return
+	end
+
+	pcall(function()
+
+		SG:SetCore(
+			"SendNotification",
+			{
+				Title="NUKE HUB",
+
+				Text=
+					p.DisplayName..
+					" is spectating you",
+
+				Duration=5
+			}
+		)
+	end)
+
+	pcall(function()
+
+		AlertSound.TimePosition=0
+		AlertSound:Play()
+	end)
+end
+
+--==============================================================
+-- SPECTATOR HISTORY
+--==============================================================
+
+local function formatDuration(seconds)
+
+	seconds=
+		math.max(
+			0,
+			math.floor(
+				(seconds or 0)+.5
+			)
+		)
+
+	if seconds<60 then
+		return tostring(seconds).."s"
+	end
+
+	if seconds<3600 then
+
+		local m=
+			math.floor(
+				seconds/60
+			)
+
+		local s=seconds%60
+
+		return
+			tostring(m)..
+			"m "..
+			string.format("%02d",s)..
+			"s"
+	end
+
+	local h=
+		math.floor(
+			seconds/3600
+		)
+
+	local m=
+		math.floor(
+			(seconds%3600)/60
+		)
+
+	return
+		tostring(h)..
+		"h "..
+		string.format("%02d",m)..
+		"m"
+end
+
+local function specHistoryText(event)
+
+	local duration=
+		(
+			event.ended
+			or os.clock()
+		)
+		-
+		event.started
+
+	local suffix="  • LIVE"
+
+	if event.reason=="stopped" then
+
+		suffix="  • stopped"
+
+	elseif event.reason=="switched" then
+
+		suffix="  • switched"
+	end
+
+	return
+		event.stamp..
+		"  "..
+		event.watcher..
+		" → "..
+		event.target..
+		"  • "..
+		formatDuration(duration)..
+		suffix
+end
+
+local function specHistoryColor(event)
+
+	if not event.ended then
+		return T.GREEN
+	end
+
+	if event.reason=="switched" then
+		return T.GOLD
+	end
+
+	return T.DIM
+end
+
+local function startHistorySession(
+	watcher,
+	targetPlayer,
+	now
+)
+
+	local event={
+		stamp=os.date("%H:%M:%S"),
+
+		watcher=watcher.DisplayName,
+
+		target=
+			targetPlayer
+			and targetPlayer.DisplayName
+			or "?",
+
+		started=now
+	}
+
+	table.insert(specHistory,1,event)
+
+	specSessions[watcher]=event
+
+	while #specHistory>20 do
+
+		local removed=
+			table.remove(
+				specHistory
+			)
+
+		for p,current in pairs(
+			specSessions
+		) do
+
+			if current==removed then
+				specSessions[p]=nil
+			end
+		end
+	end
+end
+
+local function finishHistorySession(
+	watcher,
+	now,
+	reason
+)
+
+	local event=
+		specSessions[
+			watcher
+		]
+
+	if not event then
+		return
+	end
+
+	event.ended=now
+	event.reason=reason
+
+	specSessions[watcher]=nil
+end
+
+local function trackHistory(
+	old,
+	new,
+	now
+)
+
+	for watcher,oldData in pairs(old) do
+
+		if watcher~=L then
+
+			local newData=
+				new[watcher]
+
+			if not newData then
+
+				finishHistorySession(
+					watcher,
+					now,
+					"stopped"
+				)
+
+			elseif
+				newData.target
+				~=
+				oldData.target then
+
+				finishHistorySession(
+					watcher,
+					now,
+					"switched"
+				)
+
+				startHistorySession(
+					watcher,
+					newData.target,
+					now
+				)
+			end
+		end
+	end
+
+	for watcher,data in pairs(new) do
+
+		if watcher~=L
+		and not old[watcher] then
+
+			startHistorySession(
+				watcher,
+				data.target,
+				now
+			)
+		end
+	end
+end
+
+--==============================================================
+-- SPECTATOR SCAN
+--==============================================================
+
+local function sameRelations(a,b)
+
+	for p,d in pairs(a) do
+
+		if not b[p]
+		or
+		b[p].target~=d.target then
+
+			return false
+		end
+	end
+
+	for p in pairs(b) do
+
+		if not a[p] then
+			return false
+		end
+	end
+
+	return true
+end
+
+local function scan()
+
+	local fresh={}
+	local active={}
+
+	local now=os.clock()
+
+	for _,w in ipairs(
+		P:GetPlayers()
+	) do
+
+		if w~=L then
+
+			local shown=
+				w.Character
+				and
+				hasSpec(w)
+				or false
+
+			local inv=
+				invisible(w)
+
+			local invisOwner=
+				invisOwners[w]==true
+
+			if shown then
+
+				latch[w]=true
+				lastSeen[w]=now
+			end
+
+			if not shown
+			and not inv
+			and not invisOwner
+			and latch[w] then
+
+				if now-
+					(
+						lastSeen[w]
+						or 0
+					)
+					>.75 then
+
+					latch[w]=nil
+					tc[w]=nil
+					RR[w]=nil
+				end
+			end
+
+			if shown
+			or latch[w]
+			or inv
+			or invisOwner then
+
+				local q=tc[w]
+
+				if not q
+				or
+				now-q.time>.7 then
+
+					q={
+						target=findTarget(w),
+						time=now
+					}
+
+					tc[w]=q
+				end
+
+				if inv
+				and q.target then
+
+					latch[w]=true
+					lastSeen[w]=now
+				end
+
+				if invisOwner
+				and q.target then
+
+					latch[w]=true
+					lastSeen[w]=now
+				end
+
+				local hiddenConfirmed=
+					(
+						inv
+						or invisOwner
+					)
+					and
+					latch[w]
+					and
+					q.target~=nil
+
+				if shown
+				or hiddenConfirmed then
+
+					active[w]=true
+
+					fresh[w]={
+						target=q.target
+					}
+				end
+
+				if invisOwner
+				and not shown
+				and not q.target
+				and latch[w] then
+
+					if now-
+						(
+							lastSeen[w]
+							or 0
+						)
+						>.85 then
+
+						latch[w]=nil
+						tc[w]=nil
+						RR[w]=nil
+					end
+				end
+			end
+		end
+	end
+
+	for w in pairs(tc) do
+
+		if not active[w]
+		and not latch[w]
+		and not invisOwners[w] then
+
+			tc[w]=nil
+		end
+	end
+
+	Cam=W.CurrentCamera
+
+	if Cam then
+
+		local t=
+			resolve(
+				Cam.CameraSubject
+			)
+
+		if t
+		and t~=L then
+
+			fresh[L]={
+				target=t
+			}
+		end
+	end
+
+	local current={}
+
+	for w,d in pairs(fresh) do
+
+		if w~=L
+		and d.target==L then
+
+			current[w]=true
+
+			if not watchingMe[w] then
+				notifyWatcher(w)
+			end
+		end
+	end
+
+	watchingMe=current
+
+	local changed=
+		not sameRelations(
+			fresh,
+			rel
+		)
+
+	if changed then
+
+		trackHistory(
+			rel,
+			fresh,
+			now
+		)
+	end
+
+	rel=fresh
+
+	if changed then
+		markDirty()
+	else
+		updateMini()
+	end
+end
+
+--==============================================================
+-- PLAYER SETUP
+--==============================================================
+
+local charAttributeCons={}
+
+local function disconnectCharAttribute(p)
+
+	if charAttributeCons[p] then
+
+		pcall(function()
+			charAttributeCons[p]:Disconnect()
+		end)
+
+		charAttributeCons[p]=nil
+	end
+end
+
+local function hookInvisibleAttribute(p,c)
+
+	disconnectCharAttribute(p)
+
+	charAttributeCons[p]=
+		c:GetAttributeChangedSignal(
+			"Invisible"
+		):Connect(
+			function()
+
+				if not alive then
+					return
+				end
+
+				if seeInvisible then
+
+					pcall(
+						updateInvisibleESP
+					)
+
+				else
+
+					removeInvisibleESP(p)
+				end
+			end
+		)
+end
+
+local function setup(p)
+
+	checkInvisPass(p)
+
+	lastRoom[p]=
+		p:GetAttribute(
+			"RoomTP"
+		)
+
+	connect(
+		p:GetAttributeChangedSignal(
+			"RoomTP"
+		),
+		function()
+			roomChanged(p)
+		end
+	)
+
+	if p.Character then
+
+		cacheChar(
+			p,
+			p.Character
+		)
+
+		hookInvisibleAttribute(
+			p,
+			p.Character
+		)
+	end
+
+	connect(
+		p.CharacterAdded,
+		function(c)
+
+			removeInvisibleESP(p)
+
+			task.wait(.35)
+
+			cacheChar(
+				p,
+				c
+			)
+
+			hookInvisibleAttribute(
+				p,
+				c
+			)
+
+			tc[p]=nil
+
+			if seeInvisible then
+
+				pcall(
+					updateInvisibleESP
+				)
+			end
+
+			if p==target
+			and spectating then
+
+				local h=
+					c:WaitForChild(
+						"Humanoid",
+						10
+					)
+
+				if h then
+
+					Cam=W.CurrentCamera
+					Cam.CameraSubject=h
+				end
+			end
+		end
+	)
+end
+
+for _,p in ipairs(
+	P:GetPlayers()
+) do
+	setup(p)
+end
+
+connect(
+	P.PlayerAdded,
+	function(p)
+
+		setup(p)
+
+		rebuildGroups()
+		markDirty()
+	end
+)
+
+connect(
+	P.PlayerRemoving,
+	function(p)
+
+		if lastRoom[p] then
+
+			addHistory(
+				p.DisplayName..
+					" left "..
+					display(
+						lastRoom[p]
+					)
+			)
+		end
+
+		if specSessions[p] then
+
+			finishHistorySession(
+				p,
+				os.clock(),
+				"stopped"
+			)
+		end
+
+		clearCache(p)
+
+		disconnectCharAttribute(p)
+		removeInvisibleESP(p)
+
+		latch[p]=nil
+		lastSeen[p]=nil
+
+		RR[p]=nil
+		tc[p]=nil
+
+		invisOwners[p]=nil
+		checkingPass[p]=nil
+
+		watchingMe[p]=nil
+		lastRoom[p]=nil
+
+		rebuildGroups()
+		markDirty()
+
+		if p==target then
+			stopSpec()
+		end
+	end
+)
+
+--==============================================================
+-- OVERHEAD ESP
+--==============================================================
+
+local function delOH(p)
+
+	if OH[p] then
+
+		OH[p]:Destroy()
+		OH[p]=nil
+	end
+end
+
+local function clearOH()
+
+	for p in pairs(OH) do
+		delOH(p)
+	end
+end
+
+local function getOH(p)
+
+	local c=p.Character
+
+	local head=
+		c
+		and
+		(
+			c:FindFirstChild("Head")
+			or
+			c:FindFirstChild("HumanoidRootPart")
+		)
+
+	if not head then
+		return
+	end
+
+	if OH[p]
+	and
+	OH[p].Parent==head then
+
+		return OH[p]
+	end
+
+	delOH(p)
+
+	local g=Instance.new("BillboardGui",head)
+
+	g.Size=UDim2.fromOffset(230,42)
+
+	g.StudsOffset=
+		Vector3.new(
+			0,
+			3.4,
+			0
+		)
+
+	g.AlwaysOnTop=true
+	g.MaxDistance=0
+
+	local a=Instance.new("TextLabel",g)
+
+	a.Name="Watching"
+
+	a.Size=
+		UDim2.new(
+			1,
+			0,
+			.5,
+			0
+		)
+
+	a.BackgroundTransparency=1
+	a.TextColor3=T.GREEN
+
+	a.TextStrokeTransparency=.2
+	a.TextStrokeColor3=Color3.new()
+
+	a.Font=Enum.Font.GothamBold
+	a.TextSize=11
+
+	local b=Instance.new("TextLabel",g)
+
+	b.Name="WatchedBy"
+
+	b.Size=
+		UDim2.new(
+			1,
+			0,
+			.5,
+			0
+		)
+
+	b.Position=
+		UDim2.new(
+			0,
+			0,
+			.5,
+			0
+		)
+
+	b.BackgroundTransparency=1
+	b.TextColor3=T.RED
+
+	b.TextStrokeTransparency=.2
+	b.TextStrokeColor3=Color3.new()
+
+	b.Font=Enum.Font.GothamBold
+	b.TextSize=11
+
+	OH[p]=g
+
+	return g
+end
+
+local function updateOH()
+
+	if not overhead then
+
+		clearOH()
+		return
+	end
+
+	local watching={}
+	local watched={}
+	local needed={}
+
+	for w,d in pairs(rel) do
+
+		local t=d.target
+
+		if t
+		and w.Parent
+		and t.Parent then
+
+			watching[w]=t
+			watched[t]=watched[t] or {}
+
+			table.insert(
+				watched[t],
+				w
+			)
+		end
+	end
+
+	for w,t in pairs(watching) do
+
+		needed[w]=true
+
+		local g=getOH(w)
+
+		if g then
+
+			g.Watching.Text=
+				"▲ Watching: "..
+				t.DisplayName
+		end
+	end
+
+	for t,ws in pairs(watched) do
+
+		needed[t]=true
+
+		local names={}
+
+		for _,w in ipairs(ws) do
+			table.insert(names,w.DisplayName)
+		end
+
+		table.sort(names)
+
+		local g=getOH(t)
+
+		if g then
+
+			g.WatchedBy.Text=
+				"▲ Watched by: "..
+				table.concat(
+					names,
+					", "
+				)
+		end
+	end
+
+	for p,g in pairs(OH) do
+
+		if not needed[p] then
+
+			delOH(p)
+
+		else
+
+			if not watching[p] then
+				g.Watching.Text=""
+			end
+
+			if not watched[p] then
+				g.WatchedBy.Text=""
+			end
+		end
+	end
+end
+
+--==============================================================
+-- OLD DOOR ESP
+--==============================================================
+
+local function doorPart(room)
+
+	local x=room.sign
+
+	while x
+	and x~=room.node do
+
+		if x:IsA("BasePart") then
+			return x
+		end
+
+		x=x.Parent
+	end
+
+	for _,v in ipairs(
+		room.node:GetDescendants()
+	) do
+
+		if v:IsA("BasePart") then
+			return v
+		end
+	end
+end
+
+local function clearDoorESP()
+
+	for _,g in pairs(
+		doorObjects
+	) do
+
+		if g then
+			g:Destroy()
+		end
+	end
+
+	table.clear(doorObjects)
+end
+
+local function updateDoorESP()
+
+	if not doorESP then
+
+		clearDoorESP()
+		return
+	end
+
+	local valid={}
+
+	for _,room in ipairs(rooms) do
+
+		valid[room.node]=true
+
+		local g=
+			doorObjects[
+				room.node
+			]
+
+		if not g then
+
+			local part=
+				doorPart(room)
+
+			if part then
+
+				g=
+					Instance.new(
+						"BillboardGui",
+						part
+					)
+
+				g.Size=
+					UDim2.fromOffset(
+						200,
+						28
+					)
+
+				g.StudsOffset=
+					Vector3.new(
+						0,
+						3.1,
+						0
+					)
+
+				g.AlwaysOnTop=true
+				g.MaxDistance=0
+
+				local l=
+					lbl(
+						g,
+						"",
+						10,
+						T.TEXT,
+						true
+					)
+
+				l.Name="Label"
+
+				l.Size=
+					UDim2.new(
+						1,
+						0,
+						1,
+						0
+					)
+
+				l.TextStrokeTransparency=.15
+				l.TextStrokeColor3=Color3.new()
+
+				doorObjects[
+					room.node
+				]=g
+			end
+		end
+
+		if g
+		and
+		g:FindFirstChild(
+			"Label"
+		) then
+
+			local count=
+				#(
+					groups[
+						room.user
+					]
+					or {}
+				)
+
+			g.Label.Text=
+				"⌂ "..
+				room.name..
+				"  ["..
+				tostring(count)..
+				"]"
+
+			g.Label.TextColor3=
+				count>0
+				and T.GREEN
+				or T.TEXT
+		end
+	end
+
+	for node,g in pairs(
+		doorObjects
+	) do
+
+		if not valid[node] then
+
+			g:Destroy()
+
+			doorObjects[node]=nil
+		end
+	end
+end
+
+--==============================================================
+-- UI HELPERS
+--==============================================================
+
+local function clearRows()
+
+	for _,x in ipairs(
+		Scroll:GetChildren()
+	) do
+
+		if x:IsA("Frame") then
+			x:Destroy()
+		end
+	end
+end
+
+local function section(
+	name,
+	count
+)
+
+	local f=Instance.new("Frame",Scroll)
+
+	f.Size=
+		UDim2.new(
+			1,
+			-2,
+			0,
+			23
+		)
+
+	f.BackgroundTransparency=1
+
+	local a=
+		lbl(
+			f,
+			name,
+			8,
+			T.SUB,
+			true
+		)
+
+	a.Size=
+		UDim2.new(
+			1,
+			-40,
+			1,
+			0
+		)
+
+	a.Position=UDim2.fromOffset(4,0)
+
+	local b=
+		lbl(
+			f,
+			tostring(count),
+			8,
+			T.TEXT,
+			true
+		)
+
+	b.Size=UDim2.fromOffset(30,23)
+
+	b.Position=
+		UDim2.new(
+			1,
+			-34,
+			0,
+			0
+		)
+
+	b.TextXAlignment=
+		Enum.TextXAlignment.Right
+end
+
+local function simpleRow(
+	value,
+	color
+)
+
+	local f=Instance.new("Frame",Scroll)
+
+	f.Size=
+		UDim2.new(
+			1,
+			-2,
+			0,
+			27
+		)
+
+	f.BackgroundColor3=T.PANEL
+	f.BorderSizePixel=0
+
+	round(f,6)
+
+	local a=
+		lbl(
+			f,
+			value,
+			8,
+			color or T.DIM
+		)
+
+	a.Size=
+		UDim2.new(
+			1,
+			-12,
+			1,
+			0
+		)
+
+	a.Position=UDim2.fromOffset(8,0)
+
+	a.TextTruncate=
+		Enum.TextTruncate.AtEnd
+end
+
+local function specHistoryRow(event)
+
+	local f=Instance.new("Frame",Scroll)
+
+	f.Size=
+		UDim2.new(
+			1,
+			-2,
+			0,
+			27
+		)
+
+	f.BackgroundColor3=T.PANEL
+	f.BorderSizePixel=0
+
+	round(f,6)
+
+	local a=
+		lbl(
+			f,
+			specHistoryText(event),
+			8,
+			specHistoryColor(event)
+		)
+
+	a.Size=
+		UDim2.new(
+			1,
+			-12,
+			1,
+			0
+		)
+
+	a.Position=UDim2.fromOffset(8,0)
+
+	a.TextTruncate=
+		Enum.TextTruncate.AtEnd
+
+	table.insert(
+		specHistoryLabels,
+		{
+			label=a,
+			event=event
+		}
+	)
+end
+
+local function spectatorRow(
+	w,
+	t
+)
+
+	local f=Instance.new("Frame",Scroll)
+
+	f.Size=
+		UDim2.new(
+			1,
+			-2,
+			0,
+			29
+		)
+
+	f.BackgroundColor3=T.PANEL
+	f.BorderSizePixel=0
+
+	round(f,6)
+
+	local Eye=
+		lbl(
+			f,
+			"👁",
+			8,
+			T.GREEN,
+			true
+		)
+
+	Eye.Size=UDim2.fromOffset(19,29)
+	Eye.Position=UDim2.fromOffset(6,0)
+
+	local A=
+		lbl(
+			f,
+			w.DisplayName,
+			9,
+			T.TEXT,
+			true
+		)
+
+	A.Size=
+		UDim2.new(
+			.52,
+			-20,
+			1,
+			0
+		)
+
+	A.Position=UDim2.fromOffset(25,0)
+	A.TextTruncate=Enum.TextTruncate.AtEnd
+
+	local B=
+		lbl(
+			f,
+			"→  "..
+			(
+				t
+				and t.DisplayName
+				or "?"
+			),
+			8,
+			t
+			and T.GREEN
+			or T.DIM
+		)
+
+	B.Size=
+		UDim2.new(
+			.46,
+			-8,
+			1,
+			0
+		)
+
+	B.Position=
+		UDim2.new(
+			.54,
+			0,
+			0,
+			0
+		)
+
+	B.TextTruncate=
+		Enum.TextTruncate.AtEnd
+end
+
+local function roomRow(
+	room,
+	players
+)
+
+	local occupied=#players>0
+
+	local height=
+		occupied
+		and
+		30+#players*23
+		or
+		40
+
+	local f=Instance.new("Frame",Scroll)
+
+	f.Size=
+		UDim2.new(
+			1,
+			-2,
+			0,
+			height
+		)
+
+	f.BackgroundColor3=
+		occupied
+		and C(27,30,32)
+		or T.PANEL
+
+	f.BorderSizePixel=0
+
+	round(f,6)
+
+	if occupied then
+
+		stroke(
+			f,
+			C(65,72,76),
+			.25
+		)
+	end
+
+	local Star=Instance.new("TextButton",f)
+
+	Star.Size=UDim2.fromOffset(22,22)
+	Star.Position=UDim2.fromOffset(4,3)
+
+	Star.BackgroundTransparency=1
+
+	Star.Text=
+		favorites[
+			room.user
+		]
+		and "★"
+		or "☆"
+
+	Star.TextColor3=
+		favorites[
+			room.user
+		]
+		and T.GOLD
+		or T.DIM
+
+	Star.TextSize=13
+	Star.Font=Enum.Font.GothamBold
+
+	connect(
+		Star.MouseButton1Click,
+		function()
+
+			if favorites[
+				room.user
+			] then
+
+				favorites[
+					room.user
+				]=nil
+
+			else
+
+				favorites[
+					room.user
+				]=true
+			end
+
+			markDirty()
+		end
+	)
+
+	local Name=
+		lbl(
+			f,
+			room.name..
+				"'s Room",
+			9,
+			T.TEXT,
+			true
+		)
+
+	Name.Size=
+		UDim2.new(
+			1,
+			-72,
+			0,
+			26
+		)
+
+	Name.Position=UDim2.fromOffset(28,1)
+	Name.TextTruncate=Enum.TextTruncate.AtEnd
+
+	local Count=
+		lbl(
+			f,
+			tostring(#players),
+			9,
+			occupied
+			and T.GREEN
+			or T.DIM,
+			true
+		)
+
+	Count.Size=UDim2.fromOffset(25,25)
+
+	Count.Position=
+		UDim2.new(
+			1,
+			-31,
+			0,
+			1
+		)
+
+	Count.TextXAlignment=
+		Enum.TextXAlignment.Right
+
+	if not occupied then
+
+		local E=
+			lbl(
+				f,
+				"Empty",
+				8,
+				T.DIM
+			)
+
+		E.Size=
+			UDim2.new(
+				1,
+				-35,
+				0,
+				13
+			)
+
+		E.Position=UDim2.fromOffset(28,24)
+
+		return
+	end
+
+	for i,p in ipairs(players) do
+
+		local y=
+			28+
+			(i-1)*23
+
+		local row=Instance.new("Frame",f)
+
+		row.Size=
+			UDim2.new(
+				1,
+				-18,
+				0,
+				20
+			)
+
+		row.Position=UDim2.fromOffset(9,y)
+
+		row.BackgroundColor3=C(21,23,27)
+		row.BorderSizePixel=0
+
+		round(row,5)
+
+		local Name=
+			lbl(
+				row,
+				p.DisplayName,
+				8,
+				T.SUB
+			)
+
+		Name.Size=
+			UDim2.new(
+				1,
+				-62,
+				1,
+				0
+			)
+
+		Name.Position=UDim2.fromOffset(7,0)
+		Name.TextTruncate=Enum.TextTruncate.AtEnd
+
+		local Watch=Instance.new("TextButton",row)
+
+		Watch.Size=UDim2.fromOffset(44,16)
+
+		Watch.Position=
+			UDim2.new(
+				1,
+				-48,
+				.5,
+				-8
+			)
+
+		Watch.BackgroundColor3=T.BUTTON
+		Watch.BorderSizePixel=0
+
+		Watch.Text=
+			p==L
+			and "YOU"
+			or "SPEC"
+
+		Watch.TextColor3=
+			p==L
+			and T.DIM
+			or T.TEXT
+
+		Watch.TextSize=8
+		Watch.Font=Enum.Font.GothamBold
+
+		round(Watch,5)
+
+		if p~=L then
+
+			connect(
+				Watch.MouseButton1Click,
+				function()
+
+					if startSpec(p) then
+						Box.Text=p.DisplayName
+					end
+				end
+			)
+		end
+	end
+end
+
+--==============================================================
+-- MINI UPDATE
+--==============================================================
+
+updateMini=function()
+
+	local specCount=0
+	local rows={}
+
+	for watcher,data in pairs(rel) do
+
+		specCount+=1
+
+		local targetName=
+			data
+			and data.target
+			and data.target.DisplayName
+			or "?"
+
+		table.insert(
+			rows,
+			watcher.DisplayName..
+				"  →  "..
+				targetName
+		)
+	end
+
+	table.sort(rows)
+
+	local occupied=0
+
+	for _,room in ipairs(rooms) do
+
+		if #(
+			groups[
+				room.user
+			]
+			or {}
+		)>0 then
+
+			occupied+=1
+		end
+	end
+
+	MiniStats.Text=
+		"SPEC "..
+			specCount..
+			"  •  ROOMS "..
+			occupied
+
+	MiniStats.TextColor3=
+		specCount>0
+		and T.GREEN
+		or T.SUB
+
+	if #rows==0 then
+
+		MiniNames.Text="No spectators"
+		MiniNames.TextColor3=T.DIM
+
+	else
+
+		local shown={}
+
+		for i=1,
+			math.min(
+				#rows,
+				2
+			) do
+
+			table.insert(
+				shown,
+				rows[i]
+			)
+		end
+
+		local extra=
+			#rows-#shown
+
+		MiniNames.Text=
+			table.concat(
+				shown,
+				"   •   "
+			)
+			..
+			(
+				extra>0
+				and "   +"..extra
+				or ""
+			)
+
+		MiniNames.TextColor3=T.TEXT
+	end
+end
+
+local function setMini(value)
+
+	miniMode=value
+	OP.Visible=false
+
+	if miniMode then
+
+		M.Visible=false
+		Mini.Visible=true
+
+	else
+
+		Mini.Visible=false
+		M.Visible=true
+	end
+
+	updateMini()
+end
+
+connect(
+	Minimize.MouseButton1Click,
+	function()
+		setMini(true)
+	end
+)
+
+--==============================================================
+-- MINI CLICK + DRAG
+--==============================================================
+
+local miniDragging=false
+local miniMoved=false
+
+local miniStart
+local miniPos
+
+connect(
+	MiniClick.InputBegan,
+	function(i)
+
+		if i.UserInputType==
+			Enum.UserInputType.MouseButton1 then
+
+			miniDragging=true
+			miniMoved=false
+
+			miniStart=i.Position
+			miniPos=Mini.Position
+		end
+	end
+)
+
+connect(
+	U.InputChanged,
+	function(i)
+
+		if miniDragging
+		and
+		i.UserInputType==
+			Enum.UserInputType.MouseMovement then
+
+			local d=
+				i.Position-miniStart
+
+			if math.abs(d.X)>4
+			or math.abs(d.Y)>4 then
+
+				miniMoved=true
+			end
+
+			Mini.Position=
+				UDim2.new(
+					miniPos.X.Scale,
+					miniPos.X.Offset+d.X,
+
+					miniPos.Y.Scale,
+					miniPos.Y.Offset+d.Y
+				)
+		end
+	end
+)
+
+connect(
+	U.InputEnded,
+	function(i)
+
+		if i.UserInputType==
+			Enum.UserInputType.MouseButton1
+		and miniDragging then
+
+			miniDragging=false
+
+			if not miniMoved then
+				setMini(false)
+			end
+		end
+	end
+)
+
+--==============================================================
+-- MAIN DRAG
+--==============================================================
+
+local dragging=false
+local dragStart
+local dragPos
+
+connect(
+	Header.InputBegan,
+	function(i)
+
+		if i.UserInputType==
+			Enum.UserInputType.MouseButton1 then
+
+			dragging=true
+
+			dragStart=i.Position
+			dragPos=M.Position
+		end
+	end
+)
+
+connect(
+	U.InputChanged,
+	function(i)
+
+		if dragging
+		and
+		i.UserInputType==
+			Enum.UserInputType.MouseMovement then
+
+			local d=
+				i.Position-dragStart
+
+			M.Position=
+				UDim2.new(
+					dragPos.X.Scale,
+					dragPos.X.Offset+d.X,
+
+					dragPos.Y.Scale,
+					dragPos.Y.Offset+d.Y
+				)
+		end
+	end
+)
+
+connect(
+	U.InputEnded,
+	function(i)
+
+		if i.UserInputType==
+			Enum.UserInputType.MouseButton1 then
+
+			dragging=false
+		end
+	end
+)
+
+--==============================================================
+-- REBUILD
+--==============================================================
+
+rebuild=function()
+
+	clearRows()
+
+	table.clear(
+		specHistoryLabels
+	)
+
+	------------------------------------------------------------
+	-- LIVE SPECTATORS
+	------------------------------------------------------------
+
+	local specs={}
+
+	for w,d in pairs(rel) do
+
+		table.insert(
+			specs,
+			{
+				w=w,
+				t=d.target
+			}
+		)
+	end
+
+	table.sort(
+		specs,
+		function(a,b)
+
+			return
+				low(a.w.DisplayName)
+				<
+				low(b.w.DisplayName)
+		end
+	)
+
+	section(
+		"SPECTATORS",
+		#specs
+	)
+
+	if #specs==0 then
+
+		simpleRow(
+			"No active spectators"
+		)
+
+	else
+
+		for _,v in ipairs(specs) do
+
+			spectatorRow(
+				v.w,
+				v.t
+			)
+		end
+	end
+
+	------------------------------------------------------------
+	-- SPEC HISTORY
+	------------------------------------------------------------
+
+	if specHistoryEnabled then
+
+		section(
+			"SPEC HISTORY",
+			#specHistory
+		)
+
+		if #specHistory==0 then
+
+			simpleRow(
+				"No spectator activity"
+			)
+
+		else
+
+			for i=1,
+				math.min(
+					#specHistory,
+					8
+				) do
+
+				specHistoryRow(
+					specHistory[i]
+				)
+			end
+		end
+	end
+
+	------------------------------------------------------------
+	-- ROOMS
+	------------------------------------------------------------
+
+	local list={}
+
+	for _,room in ipairs(rooms) do
+
+		local players=
+			groups[
+				room.user
+			]
+			or {}
+
+		if showEmpty
+		or #players>0 then
+
+			table.insert(
+				list,
+				{
+					room=room,
+					players=players
+				}
+			)
+		end
+	end
+
+	table.sort(
+		list,
+		function(a,b)
+
+			local ao=
+				#a.players>0
+				and 1
+				or 0
+
+			local bo=
+				#b.players>0
+				and 1
+				or 0
+
+			if ao~=bo then
+				return ao>bo
+			end
+
+			local af=
+				favorites[
+					a.room.user
+				]
+				and 1
+				or 0
+
+			local bf=
+				favorites[
+					b.room.user
+				]
+				and 1
+				or 0
+
+			if af~=bf then
+				return af>bf
+			end
+
+			return
+				low(
+					a.room.name
+				)
+				<
+				low(
+					b.room.name
+				)
+		end
+	)
+
+	section(
+		"ROOMS",
+		#list
+	)
+
+	if #list==0 then
+
+		simpleRow(
+			"No rooms detected"
+		)
+
+	else
+
+		for _,v in ipairs(list) do
+
+			roomRow(
+				v.room,
+				v.players
+			)
+		end
+	end
+
+	------------------------------------------------------------
+	-- ROOM HISTORY
+	------------------------------------------------------------
+
+	if historyEnabled then
+
+		section(
+			"ROOM HISTORY",
+			#history
+		)
+
+		if #history==0 then
+
+			simpleRow(
+				"No room activity"
+			)
+
+		else
+
+			for i=1,
+				math.min(
+					#history,
+					8
+				) do
+
+				simpleRow(
+					history[i],
+					T.SUB
+				)
+			end
+		end
+	end
+
+	updateOH()
+	updateDoorESP()
+	updateMini()
+end
+
+--==============================================================
+-- OPTIONS
+--==============================================================
+
+local function state(
+	button,
+	enabled,
+	onText,
+	offText
+)
+
+	button.Text=
+		enabled
+		and onText
+		or offText
+
+	button.TextColor3=
+		enabled
+		and T.GREEN
+		or T.RED
+end
+
+connect(
+	EmptyBtn.MouseButton1Click,
+	function()
+
+		showEmpty=
+			not showEmpty
+
+		state(
+			EmptyBtn,
+			showEmpty,
+			"EMPTY ROOMS: ON",
+			"EMPTY ROOMS: OFF"
+		)
+
+		markDirty()
+	end
+)
+
+local function updateOverheadButton()
+
+	state(
+		OHBtn,
+		overhead,
+		"SPECTATOR ESP: ON",
+		"SPECTATOR ESP: OFF"
+	)
+
+	OBtn.Text=
+		overhead
+		and "ESP ON"
+		or "ESP OFF"
+
+	OBtn.BackgroundColor3=
+		overhead
+		and T.GREEN2
+		or T.RED2
+
+	if not overhead then
+		clearOH()
+	end
+
+	markDirty()
+end
+
+connect(
+	OBtn.MouseButton1Click,
+	function()
+
+		overhead=
+			not overhead
+
+		updateOverheadButton()
+	end
+)
+
+connect(
+	OHBtn.MouseButton1Click,
+	function()
+
+		overhead=
+			not overhead
+
+		updateOverheadButton()
+	end
+)
+
+connect(
+	DoorBtn.MouseButton1Click,
+	function()
+
+		doorESP=
+			not doorESP
+
+		state(
+			DoorBtn,
+			doorESP,
+			"ROOM DOOR ESP: ON",
+			"ROOM DOOR ESP: OFF"
+		)
+
+		if not doorESP then
+
+			clearDoorESP()
+
+		else
+
+			markDirty()
+		end
+	end
+)
+
+connect(
+	HistoryBtn.MouseButton1Click,
+	function()
+
+		historyEnabled=
+			not historyEnabled
+
+		state(
+			HistoryBtn,
+			historyEnabled,
+			"ROOM HISTORY: ON",
+			"ROOM HISTORY: OFF"
+		)
+
+		markDirty()
+	end
+)
+
+connect(
+	SpecHistoryBtn.MouseButton1Click,
+	function()
+
+		specHistoryEnabled=
+			not specHistoryEnabled
+
+		state(
+			SpecHistoryBtn,
+			specHistoryEnabled,
+			"SPEC HISTORY: ON",
+			"SPEC HISTORY: OFF"
+		)
+
+		markDirty()
+	end
+)
+
+--==============================================================
+-- SPECTATE MENU TP TOGGLE
+--==============================================================
+
+connect(
+	SpectateTPBtn.MouseButton1Click,
+	function()
+
+		spectateTpEnabled=
+			not spectateTpEnabled
+
+		state(
+			SpectateTPBtn,
+			spectateTpEnabled,
+			"SPECTATE TP: ON",
+			"SPECTATE TP: OFF"
+		)
+
+		if spectateTpEnabled then
+			pcall(refreshGameSpectateTP)
+		else
+			removeGameSpectateTP()
+		end
+	end
+)
+
+--==============================================================
+-- SEE INVISIBLE TOGGLE
+--==============================================================
+
+connect(
+	InvisibleBtn.MouseButton1Click,
+	function()
+
+		seeInvisible=
+			not seeInvisible
+
+		state(
+			InvisibleBtn,
+			seeInvisible,
+			"SEE INVISIBLE: ON",
+			"SEE INVISIBLE: OFF"
+		)
+
+		if seeInvisible then
+
+			pcall(
+				updateInvisibleESP
+			)
+
+		else
+
+			clearInvisibleESP()
+		end
+	end
+)
+
+connect(
+	AlertBtn.MouseButton1Click,
+	function()
+
+		watchAlert=
+			not watchAlert
+
+		state(
+			AlertBtn,
+			watchAlert,
+			"WATCH ALERT: ON",
+			"WATCH ALERT: OFF"
+		)
+
+		if not watchAlert then
+
+			table.clear(
+				watchingMe
+			)
+		end
+	end
+)
+
+connect(
+	AutoBtn.MouseButton1Click,
+	function()
+
+		autoRefresh=
+			not autoRefresh
+
+		state(
+			AutoBtn,
+			autoRefresh,
+			"AUTO REFRESH: ON",
+			"AUTO REFRESH: OFF"
+		)
+	end
+)
+
+connect(
+	Refresh.MouseButton1Click,
+	function()
+
+		scanRooms()
+		rebuildGroups()
+
+		pcall(scan)
+
+		if seeInvisible then
+			pcall(updateInvisibleESP)
+		end
+
+		markDirty()
+	end
+)
+
+--==============================================================
+-- ROOM EVENTS
+--==============================================================
+
+local RoomSpawner=
+	W:FindFirstChild(
+		"RoomSpawner"
+	)
+
+if RoomSpawner then
+
+	connect(
+		RoomSpawner.ChildAdded,
+		function()
+
+			task.delay(
+				.15,
+				scanRooms
+			)
+		end
+	)
+
+	connect(
+		RoomSpawner.ChildRemoved,
+		function()
+
+			task.defer(
+				scanRooms
+			)
+		end
+	)
+end
+
+--==============================================================
+-- SPECTATOR LOOP
+--==============================================================
+
+task.spawn(function()
+
+	while alive
+	and G.Parent do
+
+		pcall(scan)
+
+		task.wait(
+			SPEC_DELAY
+		)
+	end
+end)
+
+--==============================================================
+-- EXACT INVISIBLE ESP LOOP
+--==============================================================
+
+task.spawn(function()
+
+	while alive
+	and G.Parent do
+
+		if seeInvisible then
+
+			pcall(
+				updateInvisibleESP
+			)
+
+		elseif next(invisibleESP) then
+
+			clearInvisibleESP()
+		end
+
+		task.wait(
+			INVIS_ESP_DELAY
+		)
+	end
+end)
+
+--==============================================================
+-- ROOM FALLBACK
+--==============================================================
+
+task.spawn(function()
+
+	while alive
+	and G.Parent do
+
+		task.wait(8)
+
+		if autoRefresh then
+
+			pcall(scanRooms)
+			pcall(rebuildGroups)
+
+			markDirty()
+		end
+	end
+end)
+
+--==============================================================
+-- LIVE HISTORY TIMER
+--==============================================================
+
+task.spawn(function()
+
+	while alive
+	and G.Parent do
+
+		task.wait(1)
+
+		if specHistoryEnabled then
+
+			for _,item in ipairs(
+				specHistoryLabels
+			) do
+
+				if item.label
+				and item.label.Parent
+				and item.event then
+
+					item.label.Text=
+						specHistoryText(
+							item.event
+						)
+
+					item.label.TextColor3=
+						specHistoryColor(
+							item.event
+						)
+				end
+			end
+		end
+	end
+end)
+
+--==============================================================
+-- LOCAL RESPAWN
+--==============================================================
+
+connect(
+	L.CharacterAdded,
+	function(c)
+
+		if not spectating then
+
+			local h=
+				c:WaitForChild(
+					"Humanoid",
+					10
+				)
+
+			if h then
+
+				Cam=W.CurrentCamera
+
+				Cam.CameraType=
+					Enum.CameraType.Custom
+
+				Cam.CameraSubject=h
+			end
+
+		elseif target
+		and target.Parent then
+
+			TeleportBtn.Visible=true
+		end
+	end
+)
+
+--==============================================================
+-- NUMPAD *
+--==============================================================
+
+connect(
+	U.InputBegan,
+	function(i,gp)
+
+		if gp
+		or U:GetFocusedTextBox() then
+			return
+		end
+
+		if i.KeyCode==KEY then
+
+			if miniMode then
+
+				Mini.Visible=
+					not Mini.Visible
+
+			else
+
+				M.Visible=
+					not M.Visible
+
+				if not M.Visible then
+					OP.Visible=false
+				end
+			end
+		end
+	end
+)
+
+--==============================================================
+-- CLEANUP
+--==============================================================
+
+local function cleanup()
+
+	if not alive then
+		return
+	end
+
+	alive=false
+
+	for _,c in ipairs(CON) do
+
+		pcall(function()
+			c:Disconnect()
+		end)
+	end
+
+	for p in pairs(cacheCons) do
+		clearCache(p)
+	end
+
+	for p in pairs(charAttributeCons) do
+		disconnectCharAttribute(p)
+	end
+
+	clearOH()
+	clearDoorESP()
+	clearInvisibleESP()
+	clearGameSpectateCache()
+
+	pcall(function()
+		AlertSound:Destroy()
+	end)
+
+	pcall(function()
+		G:Destroy()
+	end)
+end
+
+ENV.NUKE_FINAL_CLEANUP=cleanup
+
+connect(
+	Close.MouseButton1Click,
+	cleanup
+)
+
+--==============================================================
+-- START
+--==============================================================
+
+scanRooms()
+rebuildGroups()
+
+pcall(scan)
+
+markDirty()
+updateMini()
+pcall(refreshGameSpectateTP,true)
+
+print(
+	"[NUKE HUB FINAL] Exact Character.Invisible ESP loaded"
+)
